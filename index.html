@@ -2013,9 +2013,11 @@
         updateSealPreview();
       });
     }
-    for (const id of ["grayCount", "grayValue", "greenCount", "greenValue", "blueCount", "blueValue", "purpleCount", "purpleValue", "goldCount", "goldValue"]) {
-      document.getElementById(id).addEventListener("input", updatePillPreview);
-    }
+    // 新增：修改原本的清空按鈕，同步刪除我們新加的儲存數據
+    document.getElementById("clearInputs").addEventListener("click", () => {
+      resetUserInputs();
+    });
+
     document.getElementById("calculate").addEventListener("click", () => {
       try {
         fillBlankNumbers();
@@ -2030,10 +2032,199 @@
         document.getElementById("log").textContent = `計算失敗：${error.message}`;
       }
     });
-    document.getElementById("clearInputs").addEventListener("click", () => {
-      resetUserInputs();
-      localStorage.removeItem("xiuxian_calculator_data"); // 清空時同步刪除本地存儲
+
+    // =========================================================
+    // ⚡ 1. 勾選自動獲取當前時間日期功能
+    // =========================================================
+    document.getElementById("accurateTimeEnabled")?.addEventListener("change", function(e) {
+      if (e.target.checked) {
+        const now = new Date();
+        
+        // 獲取當地日期的 YYYY-MM-DD 格式
+        const year = now.getFullYear();
+        const month = String(now.getMonth() + 1).padStart(2, '0');
+        const day = String(now.getDate()).padStart(2, '0');
+        
+        // 獲取當地時間的 HH:MM 格式
+        const hours = String(now.getHours()).padStart(2, '0');
+        const minutes = String(now.getMinutes()).padStart(2, '0');
+        
+        // 拼接成 datetime-local 所需的 YYYY-MM-DDTHH:MM 格式
+        const currentDateTime = `${year}-${month}-${day}T${hours}:${minutes}`;
+        
+        const timeInput = document.getElementById("accurateStartAt");
+        if (timeInput) {
+          timeInput.value = currentDateTime;
+        }
+        
+        // 自動觸發重新計算
+        calculate();
+      }
     });
+
+
+    // =========================================================
+    // 💾 2. 跨設備代碼存檔共享方案（取代原本的 LocalStorage）
+    // =========================================================
+    const GLOBAL_SERVER_DATA = {}; // 👈 網頁發布後，這裡會被 GitHub API 自動重寫填滿數據
+
+    // GitHub 倉庫參數配置（⚠️ 請在這裡填入你自己的 GitHub 資訊 ⚠️）
+    const REPO_OWNER = "你的GitHub用戶名"; 
+    const REPO_NAME = "你的倉庫名稱";
+    const FILE_PATH = "index.html"; // 發布在網頁上的 HTML 檔案名稱
+
+    const allInputSelector = "input, select, textarea";
+
+    // 2A. 頁面初始化加載：從代碼中的 GLOBAL_SERVER_DATA 復原數據
+    function loadDataFromCode() {
+      if (!GLOBAL_SERVER_DATA || Object.keys(GLOBAL_SERVER_DATA).length === 0) return false;
+      
+      document.querySelectorAll(allInputSelector).forEach(el => {
+        if (el.id && GLOBAL_SERVER_DATA[el.id] !== undefined) {
+          if (el.type === "checkbox") {
+            el.checked = GLOBAL_SERVER_DATA[el.id];
+          } else {
+            el.value = GLOBAL_SERVER_DATA[el.id];
+          }
+        }
+      });
+      syncSegmentedButtons();
+      syncStarUI();
+      return true;
+    }
+
+    // 2B. 抓取目前畫面上的完整快照
+    function getFormSnapshot() {
+      const data = {};
+      document.querySelectorAll(allInputSelector).forEach(el => {
+        if (el.id) {
+          data[el.id] = el.type === "checkbox" ? el.checked : el.value;
+        }
+      });
+      return data;
+    }
+
+    // 2C. 雲端同步核心：點擊彈出密碼框，覆蓋 GitHub 代碼數據
+    document.getElementById("cloudSaveBtn")?.addEventListener("click", async () => {
+      const token = prompt("請輸入覆蓋代碼的通關密碼 (GitHub Personal Access Token):");
+      if (!token) return;
+
+      const statusEl = document.getElementById("syncStatus");
+      if (statusEl) {
+        statusEl.textContent = "⏳ 正在連接雲端並讀取原代碼...";
+        statusEl.style.color = "var(--muted)";
+      }
+
+      try {
+        // A. 請求 GitHub 獲取最新代碼內容與 sha 金鑰
+        const url = `https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}/contents/${FILE_PATH}`;
+        const res = await fetch(url, {
+          headers: { "Authorization": `token ${token}` }
+        });
+        
+        if (!res.ok) throw new Error("密碼錯誤或倉庫權限不足");
+        const fileData = await res.json();
+        const sha = fileData.sha;
+        
+        // 解碼舊代碼
+        const oldCode = decodeURIComponent(escape(window.atob(fileData.content.replace(/\s/g, ''))));
+
+        // B. 生成新數據與正則替換
+        const currentSnapshot = getFormSnapshot();
+        const newDataString = JSON.stringify(currentSnapshot, null, 2);
+        const regex = /const GLOBAL_SERVER_DATA = \{[\s\S]*?\};/;
+        const newCode = oldCode.replace(regex, `const GLOBAL_SERVER_DATA = ${newDataString};`);
+
+        // C. 將更新後的整份代碼推回 GitHub
+        if (statusEl) statusEl.textContent = "⏳ 正在覆蓋雲端代碼...";
+        const updateRes = await fetch(url, {
+          method: "PUT",
+          headers: {
+            "Authorization": `token ${token}`,
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({
+            message: "⚡ 透過修仙計算器網頁端自動更新數據存檔",
+            content: window.btoa(unescape(encodeURIComponent(newCode))),
+            sha: sha
+          })
+        });
+
+        if (updateRes.ok) {
+          if (statusEl) {
+            statusEl.textContent = "✅ 同步成功！GitHub 正在重新編譯，約 1 分鐘後重新整理即全設備同步。";
+            statusEl.style.color = "var(--good)";
+          }
+        } else {
+          throw new Error("發布覆蓋代碼失敗");
+        }
+
+      } catch (err) {
+        if (statusEl) {
+          statusEl.textContent = `❌ 錯誤: ${err.message}`;
+          statusEl.style.color = "red";
+        }
+      }
+    });
+
+    // 輔助函數：修復基本 Base64 編碼的中文字元集遺失問題
+    function atescape(str) { return str.replace(/./g, function(m) { return '%' + ('0' + m.charCodeAt(0).toString(16)).slice(-2); }); }
+
+    // 輔助函數：還原分段選擇鈕的點亮狀態
+    function syncSegmentedButtons() {
+      const segmentInputs = ["calcTrack", "inputMode", "previousRefinement", "fruitStrategy", "targetGoal"];
+      segmentInputs.forEach(id => {
+        const inputEl = document.getElementById(id);
+        if (inputEl) {
+          const val = inputEl.value;
+          const buttons = inputEl.closest(".segmented")?.querySelectorAll(".segment-option") || 
+                          document.querySelectorAll(`.${id}-option`) || 
+                          document.querySelectorAll(`[data-${id}]`);
+          buttons?.forEach(btn => {
+            if (btn.getAttribute("data-calc-track") === val ||
+                btn.getAttribute("data-input-mode") === val ||
+                btn.getAttribute("data-refinement") === val ||
+                btn.getAttribute("data-fruit-strategy") === val ||
+                btn.getAttribute("data-target-goal") === val) {
+              btn.classList.add("active");
+            } else {
+              btn.classList.remove("active");
+            }
+          });
+        }
+      });
+      const mode = document.getElementById("inputMode")?.value || "layer";
+      document.querySelectorAll(".row-mode-layer").forEach(el => el.style.display = mode === "layer" ? "" : "none");
+      document.querySelectorAll(".row-mode-percent").forEach(el => el.style.display = mode === "percent" ? "" : "none");
+    }
+
+    // 輔助函數：根據隱藏的星數 input 來還原至寶星星的點亮狀態
+    function syncStarUI() {
+      ["bottleStar", "mirrorStar", "furnaceStar", "sealStar"].forEach(id => {
+        const inputEl = document.getElementById(id);
+        if (inputEl) {
+          const starCount = parseInt(inputEl.value) || 0;
+          const starContainer = document.getElementById(id.replace("Star", "Stars"));
+          const stars = starContainer?.querySelectorAll("button");
+          stars?.forEach((star, index) => {
+            star.classList.toggle("active", index < starCount);
+          });
+        }
+      });
+    }
+
+    // 🚀 網頁加載啟動邏輯
+    const hasCodeData = loadDataFromCode();
+    if (!hasCodeData) {
+      fillRealms();
+      fillLayers();
+    }
+
+    // 執行初始計算
+    calculate();
+  </script>
+</body>
+</html>
 
     // ================= 新增：自動保存與加載功能 =================
     // 獲取所有需要保存的輸入欄位（包含 hidden 的狀態欄位）
